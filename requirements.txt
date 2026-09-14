@@ -1,0 +1,14 @@
+# Ядро
+sqlalchemy>=2.0
+aiohttp>=3.9
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# Продакшен БД (PostgreSQL) — раскомментировать при деплое на postgres:
+# psycopg2-binary>=2.9
+
+# Опционально:
+# aiogram>=3.4          # высокоуровневый фреймворк вместо голого aiohttp
+# asyncpg>=0.29         # асинхронный драйвер PostgreSQL (если перейти на async SQLAlchemy)
