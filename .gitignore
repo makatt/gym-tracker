@@ -1,0 +1,20 @@
+# --- секреты ---
+.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# --- данные ---
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# --- прочее ---
+.DS_Store
