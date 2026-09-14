@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gym
+      POSTGRES_PASSWORD: gym
+      POSTGRES_DB: gym
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gym -d gym"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    command: uvicorn app.api:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+psycopg2://gym:gym@db:5432/gym
+      TIMEZONE: Europe/Moscow
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  bot:
+    build: .
+    command: python run_bot.py
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      DATABASE_URL: postgresql+psycopg2://gym:gym@db:5432/gym
+      TIMEZONE: Europe/Moscow
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
