@@ -1,5 +1,6 @@
 # Ядро
 sqlalchemy>=2.0
+aiogram>=3.4
 aiohttp>=3.9
 fastapi>=0.110
 uvicorn>=0.29
@@ -10,5 +11,4 @@ pydantic-settings>=2.2
 # psycopg2-binary>=2.9
 
 # Опционально:
-# aiogram>=3.4          # высокоуровневый фреймворк вместо голого aiohttp
 # asyncpg>=0.29         # асинхронный драйвер PostgreSQL (если перейти на async SQLAlchemy)
