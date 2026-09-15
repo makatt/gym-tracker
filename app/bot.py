@@ -1,7 +1,8 @@
-"""Telegram-бот (long polling) — приём итоговых БЖУ за день и отчёты.
+"""Telegram-бот на aiogram 3.x — приём итоговых БЖУ за день и отчёты.
 
-Работает напрямую по Telegram Bot API через aiohttp (без aiogram): так код
-не тянет лишних зависимостей и видно, как устроен протокол под капотом.
+Логика та же, что была в aiohttp-версии: парсинг → апсерт в БД → отчёты.
+БД-вызовы (sync SQLAlchemy) выполняются через asyncio.to_thread, чтобы не
+блокировать event loop aiogram.
 """
 
 from __future__ import annotations
@@ -9,7 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import aiohttp
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandStart
+from aiogram.types import Message
 
 from app import nutrition as svc
 from app.config import settings
@@ -18,7 +22,9 @@ from app.parser import ParseError, parse_macros
 
 log = logging.getLogger("gym.bot")
 
-API = f"https://api.telegram.org/bot{settings.bot_token}"
+bot = Bot(token=settings.bot_token)
+dp = Dispatcher()
+router = Router()
 
 HELP = (
     "📊 <b>Трекер питания</b>\n\n"
@@ -46,14 +52,8 @@ async def run_db(fn, *args, **kwargs):
     return await asyncio.to_thread(_run_db, fn, *args, **kwargs)
 
 
-async def api_call(session: aiohttp.ClientSession, method: str, **params) -> dict:
-    url = f"{API}/{method}"
-    async with session.post(url, json=params, timeout=aiohttp.ClientTimeout(20)) as resp:
-        return await resp.json()
-
-
-async def send_message(session: aiohttp.ClientSession, chat_id: int, text: str) -> None:
-    await api_call(session, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+async def _user(msg: Message):
+    return await run_db(svc.ensure_user, msg.from_user.id, msg.from_user.username)
 
 
 def _fmt_macros(p, f, c, kcal) -> str:
@@ -78,84 +78,79 @@ def _fmt_summary(s: dict) -> str:
     return "\n".join(lines)
 
 
-async def process_update(session: aiohttp.ClientSession, update: dict) -> None:
-    """Обрабатывает одно сообщение из getUpdates."""
-    msg = update.get("message")
-    if not msg or "text" not in msg:
-        return
+@router.message(CommandStart())
+async def cmd_start(msg: Message) -> None:
+    await msg.answer(HELP, parse_mode=ParseMode.HTML)
 
-    chat_id = msg["chat"]["id"]
-    tg_id = msg.get("from", {}).get("id")
-    username = msg.get("from", {}).get("username")
-    text = msg["text"].strip()
-    low = text.lower()
 
-    if tg_id is None:
-        return
+@router.message(Command("help"))
+async def cmd_help(msg: Message) -> None:
+    await msg.answer(HELP, parse_mode=ParseMode.HTML)
 
-    if low in ("/start", "/help"):
-        reply = HELP
-    elif low.startswith("/setgoal"):
-        try:
-            m = parse_macros(text[len("/setgoal"):].strip())
-        except ParseError as e:
-            reply = f"⚠️ Не понял норму. {e}"
-        else:
-            user = await run_db(svc.ensure_user, tg_id, username)
-            await run_db(svc.set_goal, user.id, m)
-            reply = f"✅ Норма: {_fmt_macros(m.protein, m.fat, m.carbs, m.calories)}"
-    elif low == "/goal":
-        user = await run_db(svc.ensure_user, tg_id, username)
-        goal = await run_db(svc.get_goal, user.id)
-        if goal is None:
-            reply = "Норма не задана. /setgoal Б.. Ж.. У.. К.."
-        else:
-            reply = f"🎯 Норма: {_fmt_macros(goal.protein, goal.fat, goal.carbs, goal.calories)}"
-    elif low in ("/today", "/week", "/month"):
-        user = await run_db(svc.ensure_user, tg_id, username)
-        if low == "/today":
-            day = await run_db(svc.get_day, user.id, svc.today())
-            reply = (f"Сегодня: {_fmt_macros(day.protein, day.fat, day.carbs, day.calories)}"
-                     if day else "Сегодня ещё нет записи. Пришли БЖУ.")
-        else:
-            days = 7 if low == "/week" else 30
-            reply = _fmt_summary(await run_db(svc.summary, user.id, days))
+
+@router.message(Command("today"))
+async def cmd_today(msg: Message) -> None:
+    user = await _user(msg)
+    day = await run_db(svc.get_day, user.id, svc.today())
+    if day is None:
+        await msg.answer("Сегодня ещё нет записи. Пришли БЖУ.")
     else:
-        try:
-            m = parse_macros(text)
-        except ParseError as e:
-            reply = f"⚠️ {e}"
-        else:
-            user = await run_db(svc.ensure_user, tg_id, username)
-            await run_db(svc.upsert_day, user.id, svc.today(), m)
-            reply = f"✅ Записал {svc.today()}: {_fmt_macros(m.protein, m.fat, m.carbs, m.calories)}"
-
-    await send_message(session, chat_id, reply)
+        await msg.answer(f"Сегодня: {_fmt_macros(day.protein, day.fat, day.carbs, day.calories)}")
 
 
-async def poll_loop() -> None:
-    """Бесконечный long polling с обработкой смещения offset."""
-    init_db()
-    offset = 0
-    async with aiohttp.ClientSession() as session:
-        log.info("Бот запущен, long polling…")
-        while True:
-            try:
-                data = await api_call(session, "getUpdates", offset=offset,
-                                      timeout=settings.poll_timeout)
-            except Exception as e:  # noqa: BLE001 — сеть мигает, ждём и пробуем снова
-                log.warning("getUpdates error: %s", e)
-                await asyncio.sleep(3)
-                continue
-
-            for update in data.get("result", []):
-                offset = update["update_id"] + 1
-                try:
-                    await process_update(session, update)
-                except Exception as e:  # noqa: BLE001 — не роняем весь цикл
-                    log.exception("Ошибка обработки update: %s", e)
+@router.message(Command("week"))
+async def cmd_week(msg: Message) -> None:
+    user = await _user(msg)
+    await msg.answer(_fmt_summary(await run_db(svc.summary, user.id, 7)))
 
 
-def main() -> None:
+@router.message(Command("month"))
+async def cmd_month(msg: Message) -> None:
+    user = await _user(msg)
+    await msg.answer(_fmt_summary(await run_db(svc.summary, user.id, 30)))
+
+
+@router.message(Command("setgoal"))
+async def cmd_setgoal(msg: Message) -> None:
+    payload = (msg.text or "").split(maxsplit=1)
+    args = payload[1] if len(payload) > 1 else ""
+    try:
+        m = parse_macros(args)
+    except ParseError as e:
+        await msg.answer(f"⚠️ Не понял норму. {e}")
+        return
+    user = await _user(msg)
+    await run_db(svc.set_goal, user.id, m)
+    await msg.answer(f"✅ Норма: {_fmt_macros(m.protein, m.fat, m.carbs, m.calories)}")
+
+
+@router.message(Command("goal"))
+async def cmd_goal(msg: Message) -> None:
+    user = await _user(msg)
+    goal = await run_db(svc.get_goal, user.id)
+    if goal is None:
+        await msg.answer("Норма не задана. /setgoal Б.. Ж.. У.. К..")
+    else:
+        await msg.answer(f"🎯 Норма: {_fmt_macros(goal.protein, goal.fat, goal.carbs, goal.calories)}")
+
+
+@router.message(F.text)
+async def on_text(msg: Message) -> None:
+    try:
+        m = parse_macros(msg.text)
+    except ParseError as e:
+        await msg.answer(f"⚠️ {e}")
+        return
+    user = await _user(msg)
+    await run_db(svc.upsert_day, user.id, svc.today(), m)
+    await msg.answer(
+        f"✅ Записал {svc.today()}: {_fmt_macros(m.protein, m.fat, m.carbs, m.calories)}"
+    )
+
+
+async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(poll_loop())
+    init_db()
+    dp.include_router(router)
+    log.info("Бот запущен (aiogram), long polling…")
+    await dp.start_polling(bot)

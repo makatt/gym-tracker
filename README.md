@@ -17,8 +17,8 @@ Yazio (телефон) ──«Б150 Ж80 У200 К2100»──▶ Telegram-бо�
 ```
 
 Три части:
-1. **Бот** (`app/bot.py`) — принимает сообщение, парсит, пишет в БД. Работает напрямую по
-   Telegram Bot API через `aiohttp` (без aiogram — меньше зависимостей, видно протокол).
+1. **Бот** (`app/bot.py`) — принимает сообщение, парсит, пишет в БД. Написан на `aiogram` 3.x
+   (long polling).
 2. **Сервисный слой** (`app/nutrition.py`) — апсерт записи за день, агрегация за N дней,
    нормы.
 3. **API** (`app/api.py`) — REST-эндпоинты для отчётов и альтернативного ввода.
@@ -35,7 +35,7 @@ Yazio (телефон) ──«Б150 Ж80 У200 К2100»──▶ Telegram-бо�
 
 | Технология | Где |
 |---|---|
-| asyncio / aiohttp | `app/bot.py` (long polling, `poll_loop`, `run_db`) |
+| asyncio / aiogram | `app/bot.py` (long polling, роутер, `run_db`) |
 | FastAPI | `app/api.py` |
 | SQLAlchemy (ORM, апсерт) | `app/models.py`, `app/nutrition.py` |
 | PostgreSQL (prod) / SQLite (dev) | `app/db.py`, `docker-compose.yml` |
