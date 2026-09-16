@@ -1,8 +1,7 @@
-"""Telegram-бот на aiogram 3.x — приём итоговых БЖУ за день и отчёты.
+"""Telegram-бот на aiogram 3.x — питание (БЖУ за день) + силовые (подходы).
 
-Логика та же, что была в aiohttp-версии: парсинг → апсерт в БД → отчёты.
-БД-вызовы (sync SQLAlchemy) выполняются через asyncio.to_thread, чтобы не
-блокировать event loop aiogram.
+Логика: парсинг → запись в БД → отчёты. БД-вызовы (sync SQLAlchemy)
+выполняются через asyncio.to_thread, чтобы не блокировать event loop aiogram.
 """
 
 from __future__ import annotations
@@ -16,9 +15,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
 from app import nutrition as svc
+from app import strength as strength_svc
 from app.config import settings
 from app.db import SessionLocal, init_db
-from app.parser import ParseError, parse_macros
+from app.parser import ParseError, parse_macros, parse_strength
 
 log = logging.getLogger("gym.bot")
 
@@ -27,17 +27,14 @@ dp = Dispatcher()
 router = Router()
 
 HELP = (
-    "📊 <b>Трекер питания</b>\n\n"
-    "Пришли итог дня из Yazio одним сообщением:\n"
-    "<code>Б150 Ж80 У200 К2100</code>\n"
-    "или <code>150 80 200 2100</code>\n"
-    "(порядок: белки → жиры → углеводы → калории)\n\n"
-    "Команды:\n"
-    "/today — сегодняшний день\n"
-    "/week — неделя (среднее vs норма)\n"
-    "/month — месяц (среднее vs норма)\n"
-    "/setgoal Б170 Ж90 У250 К2600 — задать норму\n"
-    "/goal — показать текущую норму"
+    "📊 <b>Трекер зала и питания</b>\n\n"
+    "<b>Питание</b> — пришли итог дня из Yazio:\n"
+    "<code>Б150 Ж80 У200 К2100</code> или <code>150 80 200 2100</code>\n"
+    "/week — неделя · /month — месяц · /today — сегодня\n"
+    "/setgoal Б170 Ж90 У250 К2600 — норма · /goal — текущая норма\n\n"
+    "<b>Силовые</b> — пришли подход:\n"
+    "<code>жим 80x2</code> или <code>/log присед 100x5</code>\n"
+    "/strength жим — динамика · /exercises — список упражнений"
 )
 
 
@@ -78,6 +75,21 @@ def _fmt_summary(s: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_progress(p: dict) -> str:
+    if p["records"] == 0:
+        return f"Нет записей по «{p['exercise']}». Добавь: /log {p['exercise']} 80x2"
+    b, f = p["best"], p["first"]
+    lines = [
+        f"🏋️ <b>{p['exercise']}</b> — записей: {p['records']}",
+        f"Старт: {f['weight']:g}×{f['reps']} → 1ПМ ~{f['e1rm']:g}",
+        f"Лучший: {b['weight']:g}×{b['reps']} → 1ПМ ~{b['e1rm']:g}",
+        f"Прирост 1ПМ: {'+' if p['delta_e1rm'] >= 0 else ''}{p['delta_e1rm']:g} кг",
+    ]
+    return "\n".join(lines)
+
+
+# ---------- питание ----------
+
 @router.message(CommandStart())
 async def cmd_start(msg: Message) -> None:
     await msg.answer(HELP, parse_mode=ParseMode.HTML)
@@ -112,8 +124,8 @@ async def cmd_month(msg: Message) -> None:
 
 @router.message(Command("setgoal"))
 async def cmd_setgoal(msg: Message) -> None:
-    payload = (msg.text or "").split(maxsplit=1)
-    args = payload[1] if len(payload) > 1 else ""
+    parts = (msg.text or "").split(maxsplit=1)
+    args = parts[1] if len(parts) > 1 else ""
     try:
         m = parse_macros(args)
     except ParseError as e:
@@ -134,10 +146,71 @@ async def cmd_goal(msg: Message) -> None:
         await msg.answer(f"🎯 Норма: {_fmt_macros(goal.protein, goal.fat, goal.carbs, goal.calories)}")
 
 
+# ---------- силовые ----------
+
+@router.message(Command("log"))
+async def cmd_log(msg: Message) -> None:
+    parts = (msg.text or "").split(maxsplit=1)
+    args = parts[1] if len(parts) > 1 else ""
+    try:
+        e = parse_strength(args)
+    except ParseError as err:
+        await msg.answer(f"⚠️ {err}")
+        return
+    user = await _user(msg)
+    await run_db(strength_svc.log_strength, user.id, e.exercise, e.weight, e.reps)
+    await msg.answer(
+        f"✅ {e.exercise}: {e.weight:g} кг × {e.reps} "
+        f"(1ПМ ~{strength_svc.estimate_1rm(e.weight, e.reps):g})"
+    )
+
+
+@router.message(Command("strength"))
+async def cmd_strength(msg: Message) -> None:
+    parts = (msg.text or "").split(maxsplit=1)
+    name = (parts[1] if len(parts) > 1 else "").strip()
+    if not name:
+        await msg.answer("Укажи упражнение: /strength жим лёжа\nСписок: /exercises")
+        return
+    user = await _user(msg)
+    p = await run_db(strength_svc.progress, user.id, name)
+    await msg.answer(_fmt_progress(p), parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("exercises"))
+async def cmd_exercises(msg: Message) -> None:
+    user = await _user(msg)
+    names = await run_db(strength_svc.list_exercises, user.id)
+    if not names:
+        await msg.answer("Упражнений пока нет. Добавь: /log жим 80x2")
+    else:
+        await msg.answer("Твои упражнения:\n" + "\n".join(f"• {n}" for n in names))
+
+
+# ---------- авто-детект: силовая или БЖУ ----------
+
 @router.message(F.text)
 async def on_text(msg: Message) -> None:
+    text = msg.text or ""
+    low = text.lower()
+
+    # Если есть «x/х» — похоже на силовой подход.
+    if "x" in low or "х" in low:
+        try:
+            e = parse_strength(text)
+        except ParseError:
+            pass
+        else:
+            user = await _user(msg)
+            await run_db(strength_svc.log_strength, user.id, e.exercise, e.weight, e.reps)
+            await msg.answer(
+                f"✅ {e.exercise}: {e.weight:g} кг × {e.reps} "
+                f"(1ПМ ~{strength_svc.estimate_1rm(e.weight, e.reps):g})"
+            )
+            return
+
     try:
-        m = parse_macros(msg.text)
+        m = parse_macros(text)
     except ParseError as e:
         await msg.answer(f"⚠️ {e}")
         return

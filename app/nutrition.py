@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -11,14 +10,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app import models
-from app.config import settings
 from app.db import engine
 from app.parser import Macros
-
-
-def today() -> date:
-    """Сегодняшняя дата в часовом поясе приложения (MSK, а не серверный UTC)."""
-    return datetime.now(ZoneInfo(settings.timezone)).date()
+from app.timeutil import today
 
 
 def ensure_user(session: Session, tg_id: int, username: str | None = None) -> models.User:
