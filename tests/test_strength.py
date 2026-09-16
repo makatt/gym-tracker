@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import models, strength as strength_svc
 from app.db import Base
-from app.parser import ParseError, StrengthEntry, parse_strength
+from app.parser import ParseError, StrengthEntry, parse_strength, parse_strength_batch
 
 _test_engine = create_engine(
     "sqlite://",
@@ -42,6 +42,15 @@ class StrengthParserTest(unittest.TestCase):
     def test_weight_out_of_range(self):
         with self.assertRaises(ParseError):
             parse_strength("жим 9999x2")
+
+    def test_batch_comma(self):
+        es = parse_strength_batch("жим 80x2, присед 100x5, тяга 120x3")
+        self.assertEqual(len(es), 3)
+        self.assertEqual(es[1].exercise, "присед")
+
+    def test_batch_newline(self):
+        es = parse_strength_batch("жим 80x2\nприсед 100x5")
+        self.assertEqual(len(es), 2)
 
 
 class E1rmTest(unittest.TestCase):
@@ -84,6 +93,14 @@ class StrengthServiceTest(unittest.TestCase):
         self.assertEqual(p["records"], 2)
         self.assertEqual(p["best_e1rm"], 100.0)
         self.assertAlmostEqual(p["delta_e1rm"], 6.7)
+
+    def test_last_entry(self):
+        user_id = self._add_user()
+        strength_svc.log_strength(self.session, user_id, "жим", 80, 5)
+        strength_svc.log_strength(self.session, user_id, "жим", 90, 3)
+        last = strength_svc.last_entry(self.session, user_id, "жим")
+        self.assertEqual(last["weight"], 90)
+        self.assertEqual(last["reps"], 3)
 
     def test_exercises_listed_and_normalized(self):
         user_id = self._add_user()

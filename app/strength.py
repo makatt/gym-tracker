@@ -115,3 +115,9 @@ def progress(session: Session, user_id: int, name: str) -> dict:
         "delta_e1rm": round(best["e1rm"] - first["e1rm"], 1),
         "history": h,
     }
+
+
+def last_entry(session: Session, user_id: int, name: str) -> dict | None:
+    """Последний (самый свежий) подход по упражнению."""
+    h = history(session, user_id, name)
+    return h[-1] if h else None
