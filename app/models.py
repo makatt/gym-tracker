@@ -1,8 +1,8 @@
-"""ORM-модели. Модуль питания (вариант 1: итоговые БЖУ за день из Yazio)."""
+"""ORM-модели. Питание (итоги БЖУ за день) + силовые (упражнения и подходы)."""
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -51,6 +51,35 @@ class Goal(Base):
     fat: Mapped[float] = mapped_column(Float)
     carbs: Mapped[float] = mapped_column(Float)
     calories: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class Exercise(Base):
+    """Упражнение пользователя (уникально по имени для каждого пользователя)."""
+
+    __tablename__ = "exercises"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_exercise_user_name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))  # нормализовано в нижний регистр
+
+
+class StrengthLog(Base):
+    """Один подход: упражнение → вес × повторения в конкретный день."""
+
+    __tablename__ = "strength_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    exercise_id: Mapped[int] = mapped_column(ForeignKey("exercises.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    weight: Mapped[float] = mapped_column(Float)  # кг
+    reps: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )

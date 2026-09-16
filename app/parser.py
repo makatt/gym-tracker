@@ -124,3 +124,40 @@ def parse_macros(text: str) -> Macros:
         )
 
     return _validate(values)
+
+
+@dataclass
+class StrengthEntry:
+    exercise: str
+    weight: float
+    reps: int
+
+
+_STRENGTH_RE = re.compile(
+    r"^\s*(.+?)\s+(\d+(?:[.,]\d+)?)\s*[xх*]\s*(\d+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_strength(text: str) -> StrengthEntry:
+    """Парсит силовой подход: 'жим лёжа 80x2' → (жим лёжа, 80, 2)."""
+    if not text or not text.strip():
+        raise ParseError("Пусто. Формат силовой: /log жим лёжа 80x2")
+
+    m = _STRENGTH_RE.match(text)
+    if not m:
+        raise ParseError(
+            "Не понял силовую. Формат: <упражнение> <вес>x<повторы>, "
+            "например «жим лёжа 80x2»."
+        )
+
+    name = " ".join(m.group(1).strip().split()).lower()
+    weight = _to_float(m.group(2))
+    reps = int(m.group(3))
+
+    if not (0 < weight <= 500):
+        raise ParseError(f"Вес {weight:g} вне разумных границ (0–500 кг).")
+    if not (1 <= reps <= 100):
+        raise ParseError(f"Повторы {reps} вне разумных границ (1–100).")
+
+    return StrengthEntry(exercise=name, weight=weight, reps=reps)

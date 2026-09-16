@@ -1,29 +1,18 @@
-"""REST API (FastAPI): здоровье, записи питания, агрегация, нормы."""
+"""REST API (FastAPI): здоровье, питание, нормы, силовые."""
 
 from __future__ import annotations
 
 from datetime import date
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app import nutrition as svc
+from app import strength as strength_svc
 from app.db import SessionLocal, init_db
-from app.parser import Macros, parse_macros
+from app.parser import Macros
 
 app = FastAPI(title="Gym Tracker API", version="0.1.0")
-
-
-def get_session():
-    with SessionLocal() as session:
-        yield session
-
-
-class MacrosIn(BaseModel):
-    protein: float = Field(gt=0)
-    fat: float = Field(gt=0)
-    carbs: float = Field(gt=0)
-    calories: float = Field(gt=0)
 
 
 class NutritionIn(BaseModel):
@@ -43,6 +32,14 @@ class GoalIn(BaseModel):
     calories: float = Field(gt=0)
 
 
+class StrengthIn(BaseModel):
+    tg_id: int
+    exercise: str
+    weight: float = Field(gt=0)
+    reps: int = Field(ge=1)
+    day: date | None = None
+
+
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
@@ -55,9 +52,7 @@ def health() -> dict:
 
 @app.post("/api/nutrition")
 def add_nutrition(payload: NutritionIn):
-    from app.db import SessionLocal as S
-
-    with S() as session:
+    with SessionLocal() as session:
         user = svc.ensure_user(session, payload.tg_id)
         day = payload.day or svc.today()
         row = svc.upsert_day(session, user.id, day,
@@ -93,3 +88,37 @@ def get_day(tg_id: int, day: date | None = None):
             raise HTTPException(status_code=404, detail="Записей за этот день нет")
         return {"tg_id": tg_id, "day": row.day.isoformat(), "protein": row.protein,
                 "fat": row.fat, "carbs": row.carbs, "calories": row.calories}
+
+
+@app.post("/api/strength")
+def add_strength(payload: StrengthIn):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, payload.tg_id)
+        strength_svc.log_strength(session, user.id, payload.exercise,
+                                  payload.weight, payload.reps, payload.day)
+    name = payload.exercise.strip().lower()
+    return {"tg_id": payload.tg_id, "exercise": name, "weight": payload.weight,
+            "reps": payload.reps,
+            "e1rm": strength_svc.estimate_1rm(payload.weight, payload.reps)}
+
+
+@app.get("/api/exercises/{tg_id}")
+def get_exercises(tg_id: int):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, tg_id)
+        return {"exercises": strength_svc.list_exercises(session, user.id)}
+
+
+@app.get("/api/strength/{tg_id}/{exercise}")
+def get_strength_history(tg_id: int, exercise: str):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, tg_id)
+        return {"exercise": exercise,
+                "history": strength_svc.history(session, user.id, exercise)}
+
+
+@app.get("/api/strength/progress/{tg_id}/{exercise}")
+def get_strength_progress(tg_id: int, exercise: str):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, tg_id)
+        return strength_svc.progress(session, user.id, exercise)

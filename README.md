@@ -1,34 +1,40 @@
-# gym-tracker — трекер питания (MVP)
+# gym-tracker — трекер зала и питания
 
-Трекер прогресса в зале + питание с прогнозом. На этом этапе реализован **модуль питания**:
-итоговые БЖУ за день присылаются в Telegram-бота (значения берёшь из Yazio), бот пишет их в
-БД, а API отдаёт агрегацию и сравнение с нормой.
+Трекер прогресса в зале + питание с прогнозом. Реализовано два модуля:
+
+1. **Питание** — итоговые БЖУ за день (из Yazio) присылаются боту, агрегация за
+   неделю/месяц, сравнение с нормой.
+2. **Силовые** — подходы «упражнение × вес × повторы», история по упражнению и динамика
+   в расчётном 1ПМ (одноповторном максимуме).
 
 ## Как это работает
 
 ```
-Yazio (телефон) ──«Б150 Ж80 У200 К2100»──▶ Telegram-бот (long polling)
-                                               │  парсер → БЖУ
+Yazio (телефон) ──«Б150 Ж80 У200 К2100»──▶ Telegram-бот (aiogram, long polling)
+зал            ──«жим 80x2»─────────────▶      │
+                                               │  парсер → запись в БД
                                                ▼
                                            PostgreSQL / SQLite
                                                │
                                                ▼
-                                       FastAPI: агрегация, норма, динамика
+                              FastAPI: агрегация, норма, динамика, 1ПМ
 ```
 
-Три части:
-1. **Бот** (`app/bot.py`) — принимает сообщение, парсит, пишет в БД. Написан на `aiogram` 3.x
-   (long polling).
-2. **Сервисный слой** (`app/nutrition.py`) — апсерт записи за день, агрегация за N дней,
-   нормы.
-3. **API** (`app/api.py`) — REST-эндпоинты для отчётов и альтернативного ввода.
+Три слоя:
+- **Бот** (`app/bot.py`) — aiogram 3.x, long polling. Принимает БЖУ и силовые подходы,
+  парсит, пишет в БД, отдаёт отчёты.
+- **Сервисный слой** — `app/nutrition.py` (апсерт БЖУ, агрегация, нормы) и
+  `app/strength.py` (упражнения, подходы, расчётный 1ПМ, динамика).
+- **API** (`app/api.py`) — REST для отчётов и альтернативного ввода.
 
 Ключевые решения:
-- **Апсерт, не INSERT** — на `(user_id, day)` уникальное ограничение, повторная отправка за
-  день перезаписывает (не дублирует).
+- **Апсерт, не INSERT** — на `(user_id, day)` уникальное ограничение, повторная отправка
+  БЖУ за день перезаписывает.
+- **1ПМ по формуле Эпли** — `вес × (1 + повторы/30)`, чтобы сравнивать подходы с разным
+  числом повторов («80×2» vs «90×1»). Без этого динамику по весу считать нельзя.
 - **Часовой пояс** — «день» считается по `Europe/Moscow`, не по серверному UTC.
-- **Норма отдельно от факта** — `goals` хранит целевые БЖУ/ккал, сравнение — это JOIN.
-- **async сетевой слой + sync SQLAlchemy** — бот/API на asyncio, БД-вызовы через
+- **Норма отдельно от факта** — `goals` хранит целевые БЖУ, сравнение — это JOIN.
+- **async сетевой слой + sync SQLAlchemy** — aiogram/FastAPI на asyncio, БД-вызовы через
   `asyncio.to_thread` (переход на asyncpg = смена драйвера, логика не меняется).
 
 ## Соответствие стека файлам
@@ -37,10 +43,12 @@ Yazio (телефон) ──«Б150 Ж80 У200 К2100»──▶ Telegram-бо�
 |---|---|
 | asyncio / aiogram | `app/bot.py` (long polling, роутер, `run_db`) |
 | FastAPI | `app/api.py` |
-| SQLAlchemy (ORM, апсерт) | `app/models.py`, `app/nutrition.py` |
+| SQLAlchemy (ORM, апсерт) | `app/models.py`, `app/nutrition.py`, `app/strength.py` |
+| Расчёт 1ПМ (Epley) | `app/strength.py` (`estimate_1rm`) |
 | PostgreSQL (prod) / SQLite (dev) | `app/db.py`, `docker-compose.yml` |
-| Парсер БЖУ (regex + валидация) | `app/parser.py` |
+| Парсеры (БЖУ + силовые) | `app/parser.py` |
 | Конфиг из env | `app/config.py` (pydantic-settings) |
+| Часовой пояс (MSK) | `app/timeutil.py` |
 | Тесты | `tests/` (unittest) |
 | Docker | `Dockerfile`, `docker-compose.yml` |
 
@@ -58,7 +66,6 @@ python -m unittest discover -s tests -t .
 
 # API
 python run_api.py                      # http://127.0.0.1:8000
-# или: uvicorn app.api:app --port 8000
 
 # бот
 python run_bot.py
@@ -67,31 +74,44 @@ python run_bot.py
 ## Запуск (Docker, PostgreSQL)
 
 ```bash
-export BOT_TOKEN=...          # или лежит в .env
+export BOT_TOKEN=...
 docker compose up --build     # api на :8000, bot в polling, postgres рядом
 ```
 
 ## API
 
-- `GET  /health` — живость сервиса
-- `POST /api/nutrition` — `{tg_id, protein, fat, carbs, calories, day?}` — запись за день
+Питание:
+- `POST /api/nutrition` — `{tg_id, protein, fat, carbs, calories, day?}`
 - `GET  /api/summary/{tg_id}?days=7` — агрегация + сравнение с нормой
-- `POST /api/goals` — `{tg_id, protein, fat, carbs, calories}` — задать норму
-- `GET  /api/day/{tg_id}?day=YYYY-MM-DD` — запись за конкретный день
+- `POST /api/goals` — `{tg_id, protein, fat, carbs, calories}`
+- `GET  /api/day/{tg_id}?day=YYYY-MM-DD`
 
-## Форматы сообщения боту
+Силовые:
+- `POST /api/strength` — `{tg_id, exercise, weight, reps, day?}`
+- `GET  /api/exercises/{tg_id}` — список упражнений
+- `GET  /api/strength/{tg_id}/{exercise}` — история подходов
+- `GET  /api/strength/progress/{tg_id}/{exercise}` — динамика 1ПМ (старт/лучший/прирост)
 
+## Форматы сообщений боту
+
+Питание (порядок: белки → жиры → углеводы → калории):
 ```
 Б150 Ж80 У200 К2100
 150 80 200 2100
-150/80/200/2100
 ```
-(порядок: белки → жиры → углеводы → калории)
+
+Силовые (упражнение → вес × повторы):
+```
+жим 80x2
+/log присед 100x5
+```
+
+Команды: `/week`, `/month`, `/today`, `/setgoal`, `/goal`, `/strength <упр>`, `/exercises`.
 
 ## Что дальше (roadmap)
 
 - Модуль тела: вес, % жира, замеры (`body_measurements`).
-- Модуль силовых: `exercises`, `strength_log` + динамика в расчётном 1ПМ.
-- Модуль прогноза: оценка 1ПМ + темп по скользящему окну + доверительный интервал.
+- Модуль прогноза: темп роста 1ПМ по скользящему окну + оценка срока до целевого веса
+  («когда будет 100 кг») с доверительным интервалом.
 - Графики динамики (frontend).
 - Миграции через Alembic вместо `create_all`.
