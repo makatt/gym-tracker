@@ -1,4 +1,4 @@
-"""REST API (FastAPI): здоровье, питание, нормы, силовые."""
+"""REST API (FastAPI): питание, силовые, тренировки."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ from pydantic import BaseModel, Field
 
 from app import nutrition as svc
 from app import strength as strength_svc
+from app import workout as workout_svc
 from app.db import SessionLocal, init_db
 from app.parser import Macros
 
-app = FastAPI(title="Gym Tracker API", version="0.1.0")
+app = FastAPI(title="Gym Tracker API", version="0.2.0")
 
 
 class NutritionIn(BaseModel):
@@ -40,6 +41,23 @@ class StrengthIn(BaseModel):
     day: date | None = None
 
 
+class WorkoutIn(BaseModel):
+    tg_id: int
+    name: str | None = None
+    day: date | None = None
+
+
+class WorkoutLogIn(BaseModel):
+    tg_id: int
+    exercise: str
+    weight: float = Field(gt=0)
+    reps: int = Field(ge=1)
+
+
+class WorkoutDoneIn(BaseModel):
+    tg_id: int
+
+
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
@@ -47,8 +65,10 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "gym-tracker", "version": "0.1.0"}
+    return {"status": "ok", "service": "gym-tracker", "version": "0.2.0"}
 
+
+# ---------- питание ----------
 
 @app.post("/api/nutrition")
 def add_nutrition(payload: NutritionIn):
@@ -90,15 +110,16 @@ def get_day(tg_id: int, day: date | None = None):
                 "fat": row.fat, "carbs": row.carbs, "calories": row.calories}
 
 
+# ---------- силовые ----------
+
 @app.post("/api/strength")
 def add_strength(payload: StrengthIn):
     with SessionLocal() as session:
         user = svc.ensure_user(session, payload.tg_id)
         strength_svc.log_strength(session, user.id, payload.exercise,
                                   payload.weight, payload.reps, payload.day)
-    name = payload.exercise.strip().lower()
-    return {"tg_id": payload.tg_id, "exercise": name, "weight": payload.weight,
-            "reps": payload.reps,
+    return {"tg_id": payload.tg_id, "exercise": payload.exercise.strip().lower(),
+            "weight": payload.weight, "reps": payload.reps,
             "e1rm": strength_svc.estimate_1rm(payload.weight, payload.reps)}
 
 
@@ -122,3 +143,45 @@ def get_strength_progress(tg_id: int, exercise: str):
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return strength_svc.progress(session, user.id, exercise)
+
+
+# ---------- тренировки ----------
+
+@app.post("/api/workout")
+def start_workout(payload: WorkoutIn):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, payload.tg_id)
+        w = workout_svc.create_workout(session, user.id, payload.name, payload.day)
+        templates = workout_svc.list_templates(session, user.id)
+        template = next((t for t in templates if t["name"] == payload.name), None)
+        return {"workout_id": w.id, "name": w.name, "day": w.day.isoformat(),
+                "template": template}
+
+
+@app.post("/api/workout/log")
+def log_workout(payload: WorkoutLogIn):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, payload.tg_id)
+        row = workout_svc.log_to_workout(session, user.id, payload.exercise,
+                                         payload.weight, payload.reps)
+        if row is None:
+            raise HTTPException(status_code=400, detail="Нет активной тренировки")
+        return {"exercise": payload.exercise.strip().lower(),
+                "weight": payload.weight, "reps": payload.reps}
+
+
+@app.post("/api/workout/done")
+def done_workout(payload: WorkoutDoneIn):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, payload.tg_id)
+        rep = workout_svc.finish_workout(session, user.id)
+        if rep is None:
+            raise HTTPException(status_code=400, detail="Нет активной тренировки")
+        return rep
+
+
+@app.get("/api/workouts/{tg_id}")
+def list_workouts(tg_id: int):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, tg_id)
+        return {"workouts": workout_svc.list_workouts(session, user.id)}
