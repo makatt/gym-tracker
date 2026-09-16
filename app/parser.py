@@ -161,3 +161,14 @@ def parse_strength(text: str) -> StrengthEntry:
         raise ParseError(f"Повторы {reps} вне разумных границ (1–100).")
 
     return StrengthEntry(exercise=name, weight=weight, reps=reps)
+
+
+def parse_strength_batch(text: str) -> list[StrengthEntry]:
+    """Парсит несколько подходов через запятую/точку с запятой/перенос строки.
+
+    «жим 80x2, присед 100x5, тяга 120x3» → [жим, присед, тяга].
+    """
+    parts = [p.strip() for p in re.split(r"[,;\n]+", text) if p.strip()]
+    if not parts:
+        raise ParseError("Пусто. Формат: жим 80x2, присед 100x5")
+    return [parse_strength(p) for p in parts]
