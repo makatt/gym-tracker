@@ -12,7 +12,11 @@ if settings.database_url.startswith("sqlite"):
 
 engine = create_engine(settings.database_url, connect_args=connect_args, future=True)
 
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+# expire_on_commit=False: ORM-объекты, возвращаемые из run_db (sync в потоке),
+# остаются читаемыми после commit + закрытия сессии (иначе DetachedInstanceError).
+SessionLocal = sessionmaker(
+    bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
+)
 
 
 class Base(DeclarativeBase):
