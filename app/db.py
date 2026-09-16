@@ -1,6 +1,6 @@
 """Подключение к БД: движок, фабрика сессий, базовый класс моделей."""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
@@ -20,7 +20,18 @@ class Base(DeclarativeBase):
 
 
 def init_db() -> None:
-    """Создаёт все таблицы (для MVP; в проде — Alembic-миграции)."""
+    """Создаёт все таблицы + лёгкая миграция для старых dev-БД."""
     from app import models  # noqa: F401  — регистрация моделей
 
     Base.metadata.create_all(engine)
+
+    # Для старых SQLite-БД, где strength_logs уже есть без workout_id, добавляем
+    # колонку на лету (SQLite не умеет ALTER ... ADD CONSTRAINT, поэтому без FK).
+    if engine.dialect.name == "sqlite":
+        with engine.connect() as conn:
+            cols = [row[1] for row in conn.execute(text("PRAGMA table_info(strength_logs)"))]
+            if "workout_id" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE strength_logs ADD COLUMN workout_id INTEGER"
+                ))
+                conn.commit()

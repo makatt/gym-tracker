@@ -1,8 +1,17 @@
-"""ORM-модели. Питание (итоги БЖУ за день) + силовые (упражнения и подходы)."""
+"""ORM-модели: пользователи, питание, силовые, тренировки и шаблоны."""
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -20,11 +29,10 @@ class User(Base):
 
 
 class NutritionDay(Base):
-    """Итоговые БЖУ и калории за один день (присылает пользователь из Yazio)."""
+    """Итоговые БЖУ и калории за один день (из Yazio)."""
 
     __tablename__ = "nutrition_days"
     __table_args__ = (
-        # Одна запись на пользователя в день — повторная отправка перезаписывает.
         UniqueConstraint("user_id", "day", name="uq_nutrition_user_day"),
     )
 
@@ -41,7 +49,7 @@ class NutritionDay(Base):
 
 
 class Goal(Base):
-    """Норма БЖУ/калорий пользователя (для сравнения недобор/перебор)."""
+    """Норма БЖУ/калорий пользователя."""
 
     __tablename__ = "goals"
 
@@ -66,19 +74,60 @@ class Exercise(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    name: Mapped[str] = mapped_column(String(64))  # нормализовано в нижний регистр
+    name: Mapped[str] = mapped_column(String(64))
+
+
+class Workout(Base):
+    """Одна тренировка: набор подходов в конкретный день (например «спина»)."""
+
+    __tablename__ = "workouts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    name: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WorkoutTemplate(Base):
+    """Шаблон тренировочного дня (спина / грудь / руки)."""
+
+    __tablename__ = "workout_templates"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_template_user_name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(32))
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class TemplateExercise(Base):
+    """Упражнение внутри шаблона (в порядке выполнения)."""
+
+    __tablename__ = "template_exercises"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    template_id: Mapped[int] = mapped_column(ForeignKey("workout_templates.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    position: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class StrengthLog(Base):
-    """Один подход: упражнение → вес × повторения в конкретный день."""
+    """Один подход: упражнение → вес × повторения (опционально в рамках тренировки)."""
 
     __tablename__ = "strength_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     exercise_id: Mapped[int] = mapped_column(ForeignKey("exercises.id"), index=True)
+    workout_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workouts.id"), nullable=True, index=True
+    )
     day: Mapped[date] = mapped_column(Date, index=True)
-    weight: Mapped[float] = mapped_column(Float)  # кг
+    weight: Mapped[float] = mapped_column(Float)
     reps: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
