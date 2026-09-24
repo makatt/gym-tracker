@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import models, strength as strength_svc
 from app.db import Base
-from app.parser import ParseError, StrengthEntry, parse_strength, parse_strength_batch
+from app.parser import ParseError, StrengthEntry, parse_strength, parse_strength_batch, parse_weight_reps
 
 _test_engine = create_engine(
     "sqlite://",
@@ -51,6 +51,14 @@ class StrengthParserTest(unittest.TestCase):
     def test_batch_newline(self):
         es = parse_strength_batch("жим 80x2\nприсед 100x5")
         self.assertEqual(len(es), 2)
+
+    def test_weight_reps(self):
+        w, r = parse_weight_reps("70x5")
+        self.assertEqual((w, r), (70.0, 5))
+
+    def test_weight_reps_with_name_rejected(self):
+        with self.assertRaises(ParseError):
+            parse_weight_reps("жим 70x5")
 
 
 class E1rmTest(unittest.TestCase):

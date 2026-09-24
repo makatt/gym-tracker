@@ -1,7 +1,7 @@
-"""Telegram-бот на aiogram 3.x — питание, силовые и тренировки.
+"""Telegram-бот на aiogram 3.x — питание, силовые, тренировки.
 
-Тренировка: /workout [день] [дата] → бот показывает упражнения шаблона с прошлыми
-результатами; подходы пишутся списком в активную тренировку; /done — сводка.
+Тренировка: /workout → день (кнопки) → упражнения (кнопки с прошлым результатом) →
+нажал упражнение → присылаешь «вес x повторы» (например 70x5) → /finish или кнопка.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from app import strength as strength_svc
 from app import workout as workout_svc
 from app.config import settings
 from app.db import SessionLocal, init_db
-from app.parser import ParseError, parse_macros, parse_strength_batch
+from app.parser import ParseError, parse_macros, parse_strength_batch, parse_weight_reps
 
 log = logging.getLogger("gym.bot")
 
@@ -33,15 +33,13 @@ router = Router()
 HELP = (
     "📊 <b>Трекер зала и питания</b>\n\n"
     "<b>Тренировка</b>:\n"
-    "/workout — начать (кнопки дней: спина/грудь/руки)\n"
+    "/workout — начать (кнопки дней)\n"
     "/workout спина 2026-09-14 — день + дата (без даты = сегодня)\n"
-    "/done — закончить и показать сводку с изменениями\n"
-    "/workouts — история тренировок\n\n"
-    "<b>Силовые</b> — подходы одной строкой (пишутся в активную тренировку):\n"
-    "<code>жим 80x2, присед 100x5</code>\n"
-    "<b>Питание</b> — итог дня:\n"
-    "<code>Б150 Ж80 У200 К2100</code>\n"
-    "/week · /month · /setgoal Б.. Ж.. У.. К.."
+    "Нажал упражнение → пришли <code>70x5</code> (вес x повторы)\n"
+    "/done или кнопка 🏁 — завершить со сводкой\n"
+    "/workouts — история\n\n"
+    "<b>Силовые</b> (вне тренировки): <code>жим 80x2, присед 100x5</code>\n"
+    "<b>Питание</b>: <code>Б150 Ж80 У200 К2100</code> · /week · /month"
 )
 
 
@@ -118,20 +116,24 @@ def _suggest_kb(name: str) -> InlineKeyboardBuilder:
     return kb
 
 
-# ---------- тренировки ----------
-
-async def _workout_intro_text(user_id: int, workout, template: dict) -> str:
-    lines = [f"🏋️ <b>Тренировка: {workout.name}</b> ({workout.day})", "Упражнения (прошлый раз):"]
+async def _workout_buttons(user_id: int, template: dict, exclude_workout_id: int | None = None):
+    """Кнопки упражнений шаблона с прошлым результатом в подписи."""
+    kb = InlineKeyboardBuilder()
     for ex in template["exercises"]:
-        prev = await run_db(workout_svc.previous_entry, user_id, ex)
-        if prev:
-            lines.append(f"• {ex} — {prev['weight']:g}×{prev['reps']}")
-        else:
-            lines.append(f"• {ex} — (нет записей)")
-    lines.append("\nПришли подходы списком: <code>подтягивания 70x5, тяга 60x8</code>")
-    lines.append("Закончил — /done")
-    return "\n".join(lines)
+        prev = await run_db(workout_svc.previous_entry, user_id, ex, exclude_workout_id)
+        label = ex if prev is None else f"{ex} · {prev['weight']:g}×{prev['reps']}"
+        kb.button(text=label, callback_data=f"ex:{ex}")
+    kb.adjust(1)
+    kb.button(text="🏁 Завершить", callback_data="finish")
+    return kb.as_markup()
 
+
+async def _template_by_name(user_id: int, name: str | None) -> dict:
+    templates = await run_db(workout_svc.list_templates, user_id)
+    return next((t for t in templates if t["name"] == name), {"exercises": []})
+
+
+# ---------- тренировки ----------
 
 @router.message(Command("workout"))
 async def cmd_workout(msg: Message) -> None:
@@ -153,8 +155,11 @@ async def cmd_workout(msg: Message) -> None:
                 + ", ".join(t["name"] for t in templates))
             return
         w = await run_db(workout_svc.create_workout, user.id, matched[0]["name"], day)
-        await msg.answer(await _workout_intro_text(user.id, w, matched[0]),
-                         parse_mode=ParseMode.HTML)
+        await msg.answer(
+            f"🏋️ <b>{w.name}</b> ({w.day})\nНажимай упражнение и пришли <code>вес x повторы</code>",
+            reply_markup=await _workout_buttons(user.id, matched[0], w.id),
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     kb = InlineKeyboardBuilder()
@@ -288,10 +293,36 @@ async def on_callback(cb: CallbackQuery) -> None:
         name = parts[1]
         day = date.fromisoformat(parts[2]) if len(parts) > 2 else None
         w = await run_db(workout_svc.create_workout, user.id, name, day)
-        templates = await run_db(workout_svc.list_templates, user.id)
-        template = next((t for t in templates if t["name"] == name), {"exercises": []})
-        text = await _workout_intro_text(user.id, w, template)
-        await cb.message.edit_text(text, parse_mode=ParseMode.HTML)
+        template = await _template_by_name(user.id, name)
+        await cb.message.edit_text(
+            f"🏋️ <b>{w.name}</b> ({w.day})\nНажимай упражнение и пришли <code>вес x повторы</code>",
+            reply_markup=await _workout_buttons(user.id, template, w.id),
+            parse_mode=ParseMode.HTML,
+        )
+        await cb.answer()
+
+    elif data.startswith("ex:"):
+        name = data.split(":", 1)[1]
+        await run_db(workout_svc.set_pending, user.id, name)
+        prev = await run_db(workout_svc.previous_entry, user.id, name)
+        kb = InlineKeyboardBuilder()
+        if prev is not None:
+            kb.button(text=f"✅ Повторить {prev['weight']:g}×{prev['reps']}",
+                      callback_data=f"repeat:{name}")
+        text = f"<b>{name}</b>"
+        if prev is not None:
+            text += f"\nПрошлый: {prev['weight']:g}×{prev['reps']} (1ПМ ~{prev['e1rm']:g})"
+        text += "\nПришли: <code>вес x повторы</code>"
+        await cb.message.edit_text(text, parse_mode=ParseMode.HTML,
+                                   reply_markup=kb.as_markup() if prev is not None else None)
+        await cb.answer()
+
+    elif data == "finish":
+        rep = await run_db(workout_svc.finish_workout, user.id)
+        if rep is None:
+            await cb.answer("Нет активной тренировки", show_alert=True)
+        else:
+            await cb.message.edit_text(_fmt_workout_report(rep))
         await cb.answer()
 
     elif data.startswith("repeat:"):
@@ -300,7 +331,6 @@ async def on_callback(cb: CallbackQuery) -> None:
         if last is None:
             await cb.answer("Нет прошлых подходов", show_alert=True)
             return
-        # в активную тренировку, если есть
         if await run_db(workout_svc.active_workout, user.id):
             await run_db(workout_svc.log_to_workout, user.id, name, last["weight"], last["reps"])
         else:
@@ -337,16 +367,29 @@ async def on_callback(cb: CallbackQuery) -> None:
 async def on_text(msg: Message) -> None:
     text = msg.text or ""
     low = text.lower()
+    user = await _user(msg)
+    active = await run_db(workout_svc.active_workout, user.id)
 
-    # 1. Силовые (один или несколько подходов).
+    # 0. Выбрано упражнение (pending) → «вес x повторы».
+    if active is not None and active.pending_exercise:
+        try:
+            weight, reps = parse_weight_reps(text)
+        except ParseError:
+            pass
+        else:
+            name = await run_db(workout_svc.log_pending, user.id, weight, reps)
+            template = await _template_by_name(user.id, active.name)
+            await msg.answer(f"✅ {name}: {weight:g}×{reps}",
+                             reply_markup=await _workout_buttons(user.id, template, active.id))
+            return
+
+    # 1. Силовые (имя + вес x повторы, списком).
     if "x" in low or "х" in low:
         try:
             entries = parse_strength_batch(text)
         except ParseError as e:
             await msg.answer(f"⚠️ {e}")
             return
-        user = await _user(msg)
-        active = await run_db(workout_svc.active_workout, user.id)
         for e in entries:
             if active is not None:
                 await run_db(workout_svc.log_to_workout, user.id, e.exercise, e.weight, e.reps)
@@ -362,14 +405,12 @@ async def on_text(msg: Message) -> None:
     except ParseError:
         m = None
     if m is not None:
-        user = await _user(msg)
         await run_db(svc.upsert_day, user.id, svc.today(), m)
         await msg.answer(f"✅ Записал {svc.today()}: {_fmt_macros(m.protein, m.fat, m.carbs, m.calories)}")
         return
 
     # 3. Имя упражнения → автоподстановка прошлого подхода.
     name = " ".join(text.strip().lower().split())
-    user = await _user(msg)
     if name and name in await run_db(strength_svc.list_exercises, user.id):
         last = await run_db(strength_svc.last_entry, user.id, name)
         if last is None:

@@ -172,3 +172,17 @@ def parse_strength_batch(text: str) -> list[StrengthEntry]:
     if not parts:
         raise ParseError("Пусто. Формат: жим 80x2, присед 100x5")
     return [parse_strength(p) for p in parts]
+
+
+def parse_weight_reps(text: str) -> tuple[float, int]:
+    """Парсит только «вес x повторы» без имени упражнения (например «70x5»)."""
+    m = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*[xх*]\s*(\d+)\s*$", text, re.IGNORECASE)
+    if not m:
+        raise ParseError("Формат: <вес>x<повторы>, например 70x5")
+    weight = _to_float(m.group(1))
+    reps = int(m.group(2))
+    if not (0 < weight <= 500):
+        raise ParseError(f"Вес {weight:g} вне разумных границ (0–500 кг).")
+    if not (1 <= reps <= 100):
+        raise ParseError(f"Повторы {reps} вне разумных границ (1–100).")
+    return weight, reps
