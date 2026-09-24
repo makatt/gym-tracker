@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0a0b">
+<title>Gym Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">gym<span>tracker</span></div>
+  <div class="idbox">
+    <label for="tgid">Telegram ID</label>
+    <input id="tgid" type="text" inputmode="numeric" placeholder="802509605" autocomplete="off">
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="overview" class="active">Обзор</button>
+  <button data-tab="body">Тело</button>
+  <button data-tab="strength">Силовые</button>
+  <button data-tab="workouts">Тренировки</button>
+  <button data-tab="nutrition">Питание</button>
+</nav>
+
+<main id="content" aria-live="polite"></main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

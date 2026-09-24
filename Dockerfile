@@ -13,6 +13,7 @@ RUN pip install -r requirements.txt \
     && pip install psycopg2-binary
 
 COPY app/ app/
+COPY static/ static/
 COPY run_bot.py run_api.py ./
 
 # Не root — best practice для контейнеров.
