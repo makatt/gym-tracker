@@ -27,7 +27,11 @@ const fmt = (n, d = 1) => (n == null ? "—" : (Math.round(n * 10 ** d) / 10 ** 
 const sign = (n) => (n > 0 ? "+" : "") + fmt(n);
 
 async function get(url) {
-  const r = await fetch(url);
+  const headers = {};
+  if (window.Telegram?.WebApp?.initData) {
+    headers["X-Telegram-Init-Data"] = window.Telegram.WebApp.initData;
+  }
+  const r = await fetch(url, { headers });
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
 }
@@ -237,6 +241,11 @@ async function strengthDetail(tg, ex) {
 
 /* ---------- render ---------- */
 async function render() {
+  // Без Telegram (обычный браузер) — данные не отдаём: нужна подпись initData.
+  if (!window.Telegram?.WebApp?.initData) {
+    content.innerHTML = '<div class="empty">Открой через Telegram — кнопка меню бота @alterfitbot.</div>';
+    return;
+  }
   const tg = state.tgId;
   if (!tg) {
     content.innerHTML = '<div class="empty">Введи свой Telegram ID вверху, чтобы увидеть данные.<br><span style="font-family:var(--mono)">Твой ID: 802509605</span></div>';

@@ -1,10 +1,14 @@
-"""REST API (FastAPI): питание, силовые, тренировки, тело."""
+"""REST API (FastAPI): питание, силовые, тренировки, тело.
+
+GET-эндпоинты (чтение данных) защищены подписью Telegram Mini App initData —
+данные отдаются только авторизованному владельцу. POST (ввод) — для бота/скриптов.
+"""
 
 from __future__ import annotations
 
 from datetime import date
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -13,10 +17,12 @@ from app import body as body_svc
 from app import nutrition as svc
 from app import strength as strength_svc
 from app import workout as workout_svc
+from app.config import settings
 from app.db import SessionLocal, init_db
 from app.parser import Macros
+from app.telegram_auth import extract_user_id
 
-app = FastAPI(title="Gym Tracker API", version="0.3.0")
+app = FastAPI(title="Gym Tracker API", version="0.4.0")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -24,6 +30,21 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse("static/index.html")
+
+
+def require_telegram_user(
+    x_telegram_init_data: str | None = Header(None, alias="X-Telegram-Init-Data"),
+) -> int:
+    """Проверяет подпись initData и возвращает Telegram user id."""
+    uid = extract_user_id(x_telegram_init_data, settings.bot_token)
+    if uid is None:
+        raise HTTPException(status_code=403, detail="Требуется авторизация Telegram Mini App")
+    return uid
+
+
+def _guard(tg_id: int, auth_user: int) -> None:
+    if tg_id != auth_user:
+        raise HTTPException(status_code=403, detail="Нет доступа к этому пользователю")
 
 
 class NutritionIn(BaseModel):
@@ -92,10 +113,10 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "gym-tracker", "version": "0.3.0"}
+    return {"status": "ok", "service": "gym-tracker", "version": "0.4.0"}
 
 
-# ---------- питание ----------
+# ---------- питание (ввод) ----------
 
 @app.post("/api/nutrition")
 def add_nutrition(payload: NutritionIn):
@@ -119,15 +140,19 @@ def add_goal(payload: GoalIn):
                 "carbs": goal.carbs, "calories": goal.calories}
 
 
+# ---------- питание (чтение, защищено) ----------
+
 @app.get("/api/summary/{tg_id}")
-def get_summary(tg_id: int, days: int = 7):
+def get_summary(tg_id: int, days: int = 7, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return svc.summary(session, user.id, days)
 
 
 @app.get("/api/day/{tg_id}")
-def get_day(tg_id: int, day: date | None = None):
+def get_day(tg_id: int, day: date | None = None, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         row = svc.get_day(session, user.id, day or svc.today())
@@ -137,7 +162,7 @@ def get_day(tg_id: int, day: date | None = None):
                 "fat": row.fat, "carbs": row.carbs, "calories": row.calories}
 
 
-# ---------- силовые ----------
+# ---------- силовые (ввод) ----------
 
 @app.post("/api/strength")
 def add_strength(payload: StrengthIn):
@@ -150,15 +175,19 @@ def add_strength(payload: StrengthIn):
             "e1rm": strength_svc.estimate_1rm(payload.weight, payload.reps)}
 
 
+# ---------- силовые (чтение, защищено) ----------
+
 @app.get("/api/exercises/{tg_id}")
-def get_exercises(tg_id: int):
+def get_exercises(tg_id: int, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return {"exercises": strength_svc.list_exercises(session, user.id)}
 
 
 @app.get("/api/strength/{tg_id}/{exercise}")
-def get_strength_history(tg_id: int, exercise: str):
+def get_strength_history(tg_id: int, exercise: str, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return {"exercise": exercise,
@@ -166,13 +195,14 @@ def get_strength_history(tg_id: int, exercise: str):
 
 
 @app.get("/api/strength/progress/{tg_id}/{exercise}")
-def get_strength_progress(tg_id: int, exercise: str):
+def get_strength_progress(tg_id: int, exercise: str, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return strength_svc.progress(session, user.id, exercise)
 
 
-# ---------- тренировки ----------
+# ---------- тренировки (ввод) ----------
 
 @app.post("/api/workout")
 def start_workout(payload: WorkoutIn):
@@ -207,14 +237,17 @@ def done_workout(payload: WorkoutDoneIn):
         return rep
 
 
+# ---------- тренировки (чтение, защищено) ----------
+
 @app.get("/api/workouts/{tg_id}")
-def list_workouts(tg_id: int):
+def list_workouts(tg_id: int, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return {"workouts": workout_svc.list_workouts(session, user.id)}
 
 
-# ---------- тело ----------
+# ---------- тело (ввод) ----------
 
 @app.post("/api/profile")
 def set_profile(payload: ProfileIn):
@@ -242,8 +275,11 @@ def add_body_metric(payload: BodyMetricIn):
             "body_fat": m.body_fat_pct, "muscle": m.muscle_mass_kg}
 
 
+# ---------- тело (чтение, защищено) ----------
+
 @app.get("/api/kcal/{tg_id}")
-def get_kcal(tg_id: int):
+def get_kcal(tg_id: int, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         k = body_svc.calc_kcal(session, user.id)
@@ -253,7 +289,8 @@ def get_kcal(tg_id: int):
 
 
 @app.get("/api/body/progress/{tg_id}")
-def get_body_progress(tg_id: int):
+def get_body_progress(tg_id: int, auth_user: int = Depends(require_telegram_user)):
+    _guard(tg_id, auth_user)
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return body_svc.progress(session, user.id)
