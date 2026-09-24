@@ -87,6 +87,7 @@ class Workout(Base):
     day: Mapped[date] = mapped_column(Date, index=True)
     name: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    pending_exercise: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

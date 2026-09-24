@@ -38,4 +38,9 @@ def init_db() -> None:
                 conn.execute(text(
                     "ALTER TABLE strength_logs ADD COLUMN workout_id INTEGER"
                 ))
-                conn.commit()
+            wcols = [row[1] for row in conn.execute(text("PRAGMA table_info(workouts)"))]
+            if "pending_exercise" not in wcols:
+                conn.execute(text(
+                    "ALTER TABLE workouts ADD COLUMN pending_exercise VARCHAR(64)"
+                ))
+            conn.commit()

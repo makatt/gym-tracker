@@ -157,6 +157,28 @@ def workout_logs(session: Session, workout: models.Workout) -> list[models.Stren
     ).all())
 
 
+def set_pending(session: Session, user_id: int, exercise_name: str) -> str | None:
+    """Запоминает выбранное упражнение в активной тренировке (ввод «вес x повторы»)."""
+    w = active_workout(session, user_id)
+    if w is None:
+        return None
+    w.pending_exercise = exercise_name.strip().lower()
+    session.commit()
+    return w.pending_exercise
+
+
+def log_pending(session: Session, user_id: int, weight: float, reps: int) -> str | None:
+    """Записывает подход в выбранное (pending) упражнение и сбрасывает выбор."""
+    w = active_workout(session, user_id)
+    if w is None or not w.pending_exercise:
+        return None
+    name = w.pending_exercise
+    log_to_workout(session, user_id, name, weight, reps)
+    w.pending_exercise = None
+    session.commit()
+    return name
+
+
 def workout_report(session: Session, workout: models.Workout) -> dict:
     """Сводка тренировки: текущие подходы + прошлые + изменение 1ПМ."""
     entries = {}
