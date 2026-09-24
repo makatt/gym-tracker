@@ -2,6 +2,22 @@
 
 /* ---------- state ---------- */
 const state = { tgId: localStorage.getItem("gym_tgid") || "", tab: "overview" };
+
+// Telegram Mini App: автоопределение пользователя (без ручного ввода ID)
+const tgWeb = window.Telegram?.WebApp;
+if (tgWeb) {
+  try {
+    tgWeb.ready();
+    tgWeb.expand();
+    const uid = tgWeb.initDataUnsafe?.user?.id;
+    if (uid) {
+      state.tgId = String(uid);
+      localStorage.setItem("gym_tgid", String(uid));
+    }
+    const idbox = document.querySelector(".idbox");
+    if (idbox) idbox.style.display = "none";
+  } catch (e) { /* обычный браузер — работаем с ручным ID */ }
+}
 const $ = (s) => document.querySelector(s);
 const content = $("#content");
 
