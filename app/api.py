@@ -1,4 +1,4 @@
-"""REST API (FastAPI): питание, силовые, тренировки."""
+"""REST API (FastAPI): питание, силовые, тренировки, тело."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ from datetime import date
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app import body as body_svc
 from app import nutrition as svc
 from app import strength as strength_svc
 from app import workout as workout_svc
 from app.db import SessionLocal, init_db
 from app.parser import Macros
 
-app = FastAPI(title="Gym Tracker API", version="0.2.0")
+app = FastAPI(title="Gym Tracker API", version="0.3.0")
 
 
 class NutritionIn(BaseModel):
@@ -58,6 +59,23 @@ class WorkoutDoneIn(BaseModel):
     tg_id: int
 
 
+class ProfileIn(BaseModel):
+    tg_id: int
+    sex: str
+    height_cm: float = Field(gt=0)
+    birth_year: int
+    activity: int = Field(ge=1, le=5)
+    goal: str
+
+
+class BodyMetricIn(BaseModel):
+    tg_id: int
+    weight: float = Field(gt=0)
+    body_fat: float | None = None
+    muscle: float | None = None
+    day: date | None = None
+
+
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
@@ -65,7 +83,7 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "gym-tracker", "version": "0.2.0"}
+    return {"status": "ok", "service": "gym-tracker", "version": "0.3.0"}
 
 
 # ---------- питание ----------
@@ -185,3 +203,48 @@ def list_workouts(tg_id: int):
     with SessionLocal() as session:
         user = svc.ensure_user(session, tg_id)
         return {"workouts": workout_svc.list_workouts(session, user.id)}
+
+
+# ---------- тело ----------
+
+@app.post("/api/profile")
+def set_profile(payload: ProfileIn):
+    sex = body_svc.normalize_sex(payload.sex)
+    goal = body_svc.normalize_goal(payload.goal)
+    if not sex:
+        raise HTTPException(status_code=400, detail="Пол: м или ж")
+    if not goal:
+        raise HTTPException(status_code=400, detail="Цель: сушка / поддержание / набор")
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, payload.tg_id)
+        p = body_svc.set_profile(session, user.id, sex, payload.height_cm,
+                                 payload.birth_year, payload.activity, goal)
+    return {"tg_id": payload.tg_id, "sex": p.sex, "height_cm": p.height_cm,
+            "birth_year": p.birth_year, "activity": p.activity, "goal": p.goal}
+
+
+@app.post("/api/body")
+def add_body_metric(payload: BodyMetricIn):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, payload.tg_id)
+        m = body_svc.add_metric(session, user.id, payload.weight,
+                                payload.body_fat, payload.muscle, payload.day)
+    return {"tg_id": payload.tg_id, "day": m.day.isoformat(), "weight": m.weight_kg,
+            "body_fat": m.body_fat_pct, "muscle": m.muscle_mass_kg}
+
+
+@app.get("/api/kcal/{tg_id}")
+def get_kcal(tg_id: int):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, tg_id)
+        k = body_svc.calc_kcal(session, user.id)
+        if k is None:
+            raise HTTPException(status_code=400, detail="Нужны профиль и замер веса")
+        return k
+
+
+@app.get("/api/body/progress/{tg_id}")
+def get_body_progress(tg_id: int):
+    with SessionLocal() as session:
+        user = svc.ensure_user(session, tg_id)
+        return body_svc.progress(session, user.id)
