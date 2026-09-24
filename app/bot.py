@@ -1,13 +1,14 @@
-"""Telegram-бот на aiogram 3.x — питание, силовые, тренировки.
+"""Telegram-бот на aiogram 3.x — питание, силовые, тренировки, тело.
 
-Тренировка: /workout → день (кнопки) → упражнения (кнопки с прошлым результатом) →
-нажал упражнение → присылаешь «вес x повторы» (например 70x5) → /finish или кнопка.
+Тело: /setprofile (база) → /body (замеры) → /kcal (КБЖУ), /progress (динамика),
+фото сохраняется как визуальный журнал.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import date
 
@@ -17,6 +18,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app import body as body_svc
 from app import nutrition as svc
 from app import strength as strength_svc
 from app import workout as workout_svc
@@ -33,12 +35,14 @@ router = Router()
 HELP = (
     "📊 <b>Трекер зала и питания</b>\n\n"
     "<b>Тренировка</b>:\n"
-    "/workout — начать (кнопки дней)\n"
-    "/workout спина 2026-09-14 — день + дата (без даты = сегодня)\n"
-    "Нажал упражнение → пришли <code>70x5</code> (вес x повторы)\n"
-    "/done или кнопка 🏁 — завершить со сводкой\n"
-    "/workouts — история\n\n"
-    "<b>Силовые</b> (вне тренировки): <code>жим 80x2, присед 100x5</code>\n"
+    "/workout — начать (кнопки дней) · /workout спина 2026-09-14\n"
+    "Нажал упражнение → пришли <code>70x5</code> · /done или 🏁 · /workouts\n\n"
+    "<b>Силовые</b> (вне тренировки): <code>жим 80x2, присед 100x5</code>\n\n"
+    "<b>Тело</b>:\n"
+    "/setprofile м 180 2006 3 сушка — пол, рост, год, активность(1-5), цель\n"
+    "/body 82 15 45 — вес, % жира, мышцы\n"
+    "/kcal — расчёт КБЖУ · /progress — динамика\n"
+    "Пришли фото — сохраню в журнал прогресса\n\n"
     "<b>Питание</b>: <code>Б150 Ж80 У200 К2100</code> · /week · /month"
 )
 
@@ -117,7 +121,6 @@ def _suggest_kb(name: str) -> InlineKeyboardBuilder:
 
 
 async def _workout_buttons(user_id: int, template: dict, exclude_workout_id: int | None = None):
-    """Кнопки упражнений шаблона с прошлым результатом в подписи."""
     kb = InlineKeyboardBuilder()
     for ex in template["exercises"]:
         prev = await run_db(workout_svc.previous_entry, user_id, ex, exclude_workout_id)
@@ -194,6 +197,115 @@ async def cmd_workouts(msg: Message) -> None:
     for w in ws:
         flag = " 🟢 (активна)" if w["active"] else ""
         lines.append(f"• {w['day']} {w['name'] or '—'} — {w['count']} подх.{flag}")
+    await msg.answer("\n".join(lines))
+
+
+# ---------- тело ----------
+
+@router.message(Command("setprofile"))
+async def cmd_setprofile(msg: Message) -> None:
+    parts = (msg.text or "").split()
+    args = parts[1:]
+    if len(args) < 5:
+        await msg.answer(
+            "Формат: /setprofile <пол> <рост см> <год рождения> <активность 1-5> <цель>\n"
+            "Пример: /setprofile м 180 2006 3 сушка\n"
+            "Активность: 1 сидячий · 2 лёгкая · 3 средняя · 4 высокая · 5 очень высокая\n"
+            "Цель: сушка / поддержание / набор")
+        return
+    sex = body_svc.normalize_sex(args[0])
+    if not sex:
+        await msg.answer("Пол: м или ж")
+        return
+    try:
+        height = float(args[1])
+        year = int(args[2])
+        activity = int(args[3])
+    except ValueError:
+        await msg.answer("Рост, год и активность — числа. Пример: /setprofile м 180 2006 3 сушка")
+        return
+    goal = body_svc.normalize_goal(args[4])
+    if not goal:
+        await msg.answer("Цель: сушка / поддержание / набор")
+        return
+    if not (1 <= activity <= 5):
+        await msg.answer("Активность: 1–5")
+        return
+    user = await _user(msg)
+    await run_db(body_svc.set_profile, user.id, sex, height, year, activity, goal)
+    await msg.answer(
+        f"✅ Профиль: {sex}, {height:g} см, {year} г.р., активность {activity}, цель {goal}")
+
+
+@router.message(Command("profile"))
+async def cmd_profile(msg: Message) -> None:
+    user = await _user(msg)
+    p = await run_db(body_svc.get_profile, user.id)
+    if p is None:
+        await msg.answer("Профиль не задан. /setprofile м 180 2006 3 сушка")
+    else:
+        await msg.answer(
+            f"Пол {p.sex} · рост {p.height_cm:g} см · {p.birth_year} г.р. · "
+            f"активность {p.activity} · цель {p.goal}")
+
+
+@router.message(Command("body"))
+async def cmd_body(msg: Message) -> None:
+    parts = (msg.text or "").split()
+    args = parts[1:]
+    if not args:
+        await msg.answer("Формат: /body <вес кг> [% жира] [мышцы кг]\nПример: /body 82 15 45")
+        return
+    try:
+        weight = float(args[0])
+        fat = float(args[1]) if len(args) > 1 else None
+        muscle = float(args[2]) if len(args) > 2 else None
+    except ValueError:
+        await msg.answer("Числа. Пример: /body 82 15 45")
+        return
+    user = await _user(msg)
+    await run_db(body_svc.add_metric, user.id, weight, fat, muscle)
+    out = f"✅ Замер: вес {weight:g} кг"
+    if fat is not None:
+        out += f", жир {fat:g}%"
+    if muscle is not None:
+        out += f", мышцы {muscle:g} кг"
+    await msg.answer(out)
+
+
+@router.message(Command("kcal"))
+async def cmd_kcal(msg: Message) -> None:
+    user = await _user(msg)
+    k = await run_db(body_svc.calc_kcal, user.id)
+    if k is None:
+        await msg.answer("Нужны профиль и вес. Сначала /setprofile м 180 2006 3 сушка, потом /body 82")
+        return
+    await msg.answer(
+        f"🎯 <b>КБЖУ</b> (цель: {k['goal']}, вес {k['weight']:g} кг, возраст {k['age']})\n"
+        f"BMR ~{k['bmr']} · TDEE ~{k['tdee']} ккал\n"
+        f"Цель: <b>{k['target_kcal']} ккал</b>\n"
+        f"Б {k['protein']:g} · Ж {k['fat']:g} · У {k['carbs']:g}",
+        parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("progress"))
+async def cmd_progress(msg: Message) -> None:
+    user = await _user(msg)
+    p = await run_db(body_svc.progress, user.id)
+    if p["records"] == 0:
+        await msg.answer("Замеров пока нет. /body 82 15 45")
+        return
+    latest, oldest = p["latest"], p["oldest"]
+    lines = [f"📉 Замеров: {p['records']}",
+             f"Вес: {oldest['weight']:g} → {latest['weight']:g} ({p['weight_delta']:+g} кг)"]
+    if p["fat_delta"] is not None:
+        lines.append(f"Жир: {oldest['fat']:g} → {latest['fat']:g}% ({p['fat_delta']:+g}%)")
+    lines.append("Последние:")
+    for r in p["history"][:5]:
+        s = f"• {r['day']} вес {r['weight']:g}"
+        if r["fat"] is not None:
+            s += f" жир {r['fat']:g}%"
+        lines.append(s)
     await msg.answer("\n".join(lines))
 
 
@@ -361,6 +473,23 @@ async def on_callback(cb: CallbackQuery) -> None:
         await cb.answer()
 
 
+# ---------- фото ----------
+
+@router.message(F.photo)
+async def on_photo(msg: Message) -> None:
+    user = await _user(msg)
+    photo = msg.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    os.makedirs("data/photos", exist_ok=True)
+    path = f"data/photos/{user.id}_{msg.date:%Y-%m-%d}_{msg.message_id}.jpg"
+    await bot.download_file(file.file_path, path)
+    await run_db(body_svc.add_photo, user.id, path, msg.caption)
+    await msg.answer(
+        "📸 Фото сохранено в журнал прогресса.\n"
+        "Точный % жира по фото я не определю — если знаешь цифры с весов, "
+        "пришли /body 82 15 45.")
+
+
 # ---------- авто-детект ----------
 
 @router.message(F.text)
@@ -428,7 +557,7 @@ async def on_text(msg: Message) -> None:
         "Не понял. Форматы:\n"
         "• силовая: <code>жим 80x2</code> (или списком через запятую)\n"
         "• питание: <code>Б150 Ж80 У200 К2100</code>\n"
-        "• тренировка: /workout\n"
+        "• тренировка: /workout · тело: /body 82 15 45\n"
         "/help — все команды",
         parse_mode=ParseMode.HTML,
     )

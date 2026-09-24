@@ -133,3 +133,49 @@ class StrengthLog(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class BodyProfile(Base):
+    """База для расчёта КБЖУ: пол, рост, год рождения, активность, цель."""
+
+    __tablename__ = "body_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True)
+    sex: Mapped[str] = mapped_column(String(8))          # male / female
+    height_cm: Mapped[float] = mapped_column(Float)
+    birth_year: Mapped[int] = mapped_column(Integer)
+    activity: Mapped[int] = mapped_column(Integer)        # 1–5
+    goal: Mapped[str] = mapped_column(String(16))         # cut / maintain / bulk
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class BodyMetric(Base):
+    """Снимок тела на дату: вес, % жира, мышечная масса."""
+
+    __tablename__ = "body_metrics"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    weight_kg: Mapped[float] = mapped_column(Float)
+    body_fat_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    muscle_mass_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class ProgressPhoto(Base):
+    """Фото прогресса (визуальный журнал)."""
+
+    __tablename__ = "progress_photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    file_path: Mapped[str] = mapped_column(String(255))
+    caption: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
